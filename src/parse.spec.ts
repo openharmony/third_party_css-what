@@ -1,5 +1,6 @@
-import { readFileSync } from "fs";
-import { parse } from ".";
+import { readFileSync } from "node:fs";
+import { describe, it, expect } from "vitest";
+import { parse } from "./parse";
 import { tests } from "./__fixtures__/tests";
 
 const broken = [
@@ -29,18 +30,16 @@ const broken = [
 describe("Parse", () => {
     describe("Own tests", () => {
         for (const [selector, expected, message] of tests) {
-            test(message, () =>
-                expect(parse(selector)).toStrictEqual(expected)
-            );
+            it(message, () => expect(parse(selector)).toStrictEqual(expected));
         }
     });
 
     describe("Collected selectors (qwery, sizzle, nwmatcher)", () => {
         const out = JSON.parse(
-            readFileSync(`${__dirname}/__fixtures__/out.json`, "utf8")
+            readFileSync(`${__dirname}/__fixtures__/out.json`, "utf8"),
         );
         for (const s of Object.keys(out)) {
-            test(s, () => {
+            it(s, () => {
                 expect(parse(s)).toStrictEqual(out[s]);
             });
         }
@@ -60,5 +59,11 @@ describe("Parse", () => {
         ]);
 
         expect(() => parse("/*/")).toThrowError("Comment was not terminated");
+    });
+
+    it("should support legacy pseudo-elements with single colon", () => {
+        expect(parse(":before")).toEqual([
+            [{ name: "before", data: null, type: "pseudo-element" }],
+        ]);
     });
 });
