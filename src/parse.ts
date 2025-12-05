@@ -8,7 +8,7 @@ import {
     DataType,
 } from "./types";
 
-const reName = /^[^\\#]?(?:\\(?:[\da-f]{1,6}\s?|.)|[\w\-\u00b0-\uFFFF])+/;
+const reName = /^[^#\\]?(?:\\(?:[\da-f]{1,6}\s?|.)|[\w\u00B0-\uFFFF-])+/;
 const reEscape = /\\([\da-f]{1,6}\s?|(\s)|.)/gi;
 
 const enum CharCode {
@@ -26,7 +26,6 @@ const enum CharCode {
     QuestionMark = 63,
     ExclamationMark = 33,
     Slash = 47,
-    Star = 42,
     Equal = 61,
     Dollar = 36,
     Pipe = 124,
@@ -68,6 +67,19 @@ const unpackPseudos = new Set([
 ]);
 
 /**
+ * Pseudo elements defined in CSS Level 1 and CSS Level 2 can be written with
+ * a single colon; eg. :before will turn into ::before.
+ *
+ * @see {@link https://www.w3.org/TR/2018/WD-selectors-4-20181121/#pseudo-element-syntax}
+ */
+const pseudosToPseudoElements = new Set([
+    "before",
+    "after",
+    "first-line",
+    "first-letter",
+]);
+
+/**
  * Checks whether a specific selector is a traversal.
  * This is useful eg. in swapping the order of elements that
  * are not traversals.
@@ -81,10 +93,12 @@ export function isTraversal(selector: Selector): selector is Traversal {
         case SelectorType.Descendant:
         case SelectorType.Parent:
         case SelectorType.Sibling:
-        case SelectorType.ColumnCombinator:
+        case SelectorType.ColumnCombinator: {
             return true;
-        default:
+        }
+        default: {
             return false;
+        }
     }
 }
 
@@ -92,20 +106,23 @@ const stripQuotesFromPseudos = new Set(["contains", "icontains"]);
 
 // Unescape function taken from https://github.com/jquery/sizzle/blob/master/src/sizzle.js#L152
 function funescape(_: string, escaped: string, escapedWhitespace?: string) {
-    const high = parseInt(escaped, 16) - 0x10000;
+    const high = Number.parseInt(escaped, 16) - 0x1_00_00;
 
     // NaN means non-codepoint
     return high !== high || escapedWhitespace
         ? escaped
         : high < 0
-        ? // BMP codepoint
-          String.fromCharCode(high + 0x10000)
-        : // Supplemental Plane codepoint (surrogate pair)
-          String.fromCharCode((high >> 10) | 0xd800, (high & 0x3ff) | 0xdc00);
+          ? // BMP codepoint
+            String.fromCharCode(high + 0x1_00_00)
+          : // Supplemental Plane codepoint (surrogate pair)
+            String.fromCharCode(
+                (high >> 10) | 0xd8_00,
+                (high & 0x3_ff) | 0xdc_00,
+            );
 }
 
-function unescapeCSS(str: string) {
-    return str.replace(reEscape, funescape);
+function unescapeCSS(cssString: string) {
+    return cssString.replace(reEscape, funescape);
 }
 
 function isQuote(c: number): boolean {
@@ -123,10 +140,9 @@ function isWhitespace(c: number): boolean {
 }
 
 /**
- * Parses `selector`, optionally with the passed `options`.
+ * Parses `selector`.
  *
  * @param selector Selector to parse.
- * @param options Options for parsing.
  * @returns Returns a two-dimensional array.
  * The first dimension represents selectors separated by commas (eg. `sub1, sub2`),
  * the second contains the relevant tokens for that selector.
@@ -146,7 +162,7 @@ export function parse(selector: string): Selector[][] {
 function parseSelector(
     subselects: Selector[][],
     selector: string,
-    selectorIndex: number
+    selectorIndex: number,
 ): number {
     let tokens: Selector[] = [];
 
@@ -155,7 +171,7 @@ function parseSelector(
 
         if (!match) {
             throw new Error(
-                `Expected name, found ${selector.slice(selectorIndex)}`
+                `Expected name, found ${selector.slice(selectorIndex)}`,
             );
         }
 
@@ -178,40 +194,37 @@ function parseSelector(
     function readValueWithParenthesis(): string {
         selectorIndex += 1;
         const start = selectorIndex;
-        let counter = 1;
 
         for (
-            ;
-            counter > 0 && selectorIndex < selector.length;
+            let counter = 1;
+            selectorIndex < selector.length;
             selectorIndex++
         ) {
-            if (
-                selector.charCodeAt(selectorIndex) ===
-                    CharCode.LeftParenthesis &&
-                !isEscaped(selectorIndex)
-            ) {
-                counter++;
-            } else if (
-                selector.charCodeAt(selectorIndex) ===
-                    CharCode.RightParenthesis &&
-                !isEscaped(selectorIndex)
-            ) {
-                counter--;
+            switch (selector.charCodeAt(selectorIndex)) {
+                case CharCode.BackSlash: {
+                    // Skip next character
+                    selectorIndex += 1;
+                    break;
+                }
+                case CharCode.LeftParenthesis: {
+                    counter += 1;
+                    break;
+                }
+                case CharCode.RightParenthesis: {
+                    counter -= 1;
+
+                    if (counter === 0) {
+                        return unescapeCSS(
+                            selector.slice(start, selectorIndex++),
+                        );
+                    }
+
+                    break;
+                }
             }
         }
 
-        if (counter) {
-            throw new Error("Parenthesis not matched");
-        }
-
-        return unescapeCSS(selector.slice(start, selectorIndex - 1));
-    }
-
-    function isEscaped(pos: number): boolean {
-        let slashCount = 0;
-
-        while (selector.charCodeAt(--pos) === CharCode.BackSlash) slashCount++;
-        return (slashCount & 1) === 1;
+        throw new Error("Parenthesis not matched");
     }
 
     function ensureNotTraversal() {
@@ -254,7 +267,7 @@ function parseSelector(
      */
     function finalizeSubselector() {
         if (
-            tokens.length &&
+            tokens.length > 0 &&
             tokens[tokens.length - 1].type === SelectorType.Descendant
         ) {
             tokens.pop();
@@ -357,7 +370,7 @@ function parseSelector(
 
                 let action: AttributeAction = AttributeAction.Exists;
                 const possibleAction = actionTypes.get(
-                    selector.charCodeAt(selectorIndex)
+                    selector.charCodeAt(selectorIndex),
                 );
 
                 if (possibleAction) {
@@ -386,57 +399,65 @@ function parseSelector(
                 if (action !== "exists") {
                     if (isQuote(selector.charCodeAt(selectorIndex))) {
                         const quote = selector.charCodeAt(selectorIndex);
-                        let sectionEnd = selectorIndex + 1;
+                        selectorIndex += 1;
+                        const sectionStart = selectorIndex;
                         while (
-                            sectionEnd < selector.length &&
-                            (selector.charCodeAt(sectionEnd) !== quote ||
-                                isEscaped(sectionEnd))
+                            selectorIndex < selector.length &&
+                            selector.charCodeAt(selectorIndex) !== quote
                         ) {
-                            sectionEnd += 1;
+                            selectorIndex +=
+                                // Skip next character if it is escaped
+                                selector.charCodeAt(selectorIndex) ===
+                                CharCode.BackSlash
+                                    ? 2
+                                    : 1;
                         }
 
-                        if (selector.charCodeAt(sectionEnd) !== quote) {
+                        if (selector.charCodeAt(selectorIndex) !== quote) {
                             throw new Error("Attribute value didn't end");
                         }
 
                         value = unescapeCSS(
-                            selector.slice(selectorIndex + 1, sectionEnd)
+                            selector.slice(sectionStart, selectorIndex),
                         );
-                        selectorIndex = sectionEnd + 1;
+                        selectorIndex += 1;
                     } else {
                         const valueStart = selectorIndex;
 
                         while (
                             selectorIndex < selector.length &&
-                            ((!isWhitespace(
-                                selector.charCodeAt(selectorIndex)
-                            ) &&
-                                selector.charCodeAt(selectorIndex) !==
-                                    CharCode.RightSquareBracket) ||
-                                isEscaped(selectorIndex))
+                            !isWhitespace(selector.charCodeAt(selectorIndex)) &&
+                            selector.charCodeAt(selectorIndex) !==
+                                CharCode.RightSquareBracket
                         ) {
-                            selectorIndex += 1;
+                            selectorIndex +=
+                                // Skip next character if it is escaped
+                                selector.charCodeAt(selectorIndex) ===
+                                CharCode.BackSlash
+                                    ? 2
+                                    : 1;
                         }
 
                         value = unescapeCSS(
-                            selector.slice(valueStart, selectorIndex)
+                            selector.slice(valueStart, selectorIndex),
                         );
                     }
 
                     stripWhitespace(0);
 
                     // See if we have a force ignore flag
-
-                    const forceIgnore =
-                        selector.charCodeAt(selectorIndex) | 0x20;
-
-                    // If the forceIgnore flag is set (either `i` or `s`), use that value
-                    if (forceIgnore === CharCode.LowerS) {
-                        ignoreCase = false;
-                        stripWhitespace(1);
-                    } else if (forceIgnore === CharCode.LowerI) {
-                        ignoreCase = true;
-                        stripWhitespace(1);
+                    switch (selector.charCodeAt(selectorIndex) | 0x20) {
+                        // If the forceIgnore flag is set (either `i` or `s`), use that value
+                        case CharCode.LowerI: {
+                            ignoreCase = true;
+                            stripWhitespace(1);
+                            break;
+                        }
+                        case CharCode.LowerS: {
+                            ignoreCase = false;
+                            stripWhitespace(1);
+                            break;
+                        }
                     }
                 }
 
@@ -472,10 +493,20 @@ function parseSelector(
                                 ? readValueWithParenthesis()
                                 : null,
                     });
-                    continue;
+                    break;
                 }
 
                 const name = getName(1).toLowerCase();
+
+                if (pseudosToPseudoElements.has(name)) {
+                    tokens.push({
+                        type: SelectorType.PseudoElement,
+                        name,
+                        data: null,
+                    });
+                    break;
+                }
+
                 let data: DataType = null;
 
                 if (
@@ -485,7 +516,7 @@ function parseSelector(
                     if (unpackPseudos.has(name)) {
                         if (isQuote(selector.charCodeAt(selectorIndex + 1))) {
                             throw new Error(
-                                `Pseudo-selector ${name} cannot be quoted`
+                                `Pseudo-selector ${name} cannot be quoted`,
                             );
                         }
 
@@ -493,7 +524,7 @@ function parseSelector(
                         selectorIndex = parseSelector(
                             data,
                             selector,
-                            selectorIndex + 1
+                            selectorIndex + 1,
                         );
 
                         if (
@@ -501,7 +532,7 @@ function parseSelector(
                             CharCode.RightParenthesis
                         ) {
                             throw new Error(
-                                `Missing closing parenthesis in :${name} (${selector})`
+                                `Missing closing parenthesis in :${name} (${selector})`,
                             );
                         }
 
@@ -592,7 +623,7 @@ function parseSelector(
                 tokens.push(
                     name === "*"
                         ? { type: SelectorType.Universal, namespace }
-                        : { type: SelectorType.Tag, name, namespace }
+                        : { type: SelectorType.Tag, name, namespace },
                 );
             }
         }
